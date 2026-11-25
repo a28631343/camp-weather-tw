@@ -65,10 +65,12 @@ async function search(e){e.preventDefault();const id=++searchId;let q=el('place'
  if(map){
   let u=map.u;
   if(map.short){
-   el('searchInfo').textContent='正在讀取 Google 地圖分享連結…';
-   try{const r=await json(location.origin+'/api/map-link',{url:u.href});u=mapURL(r.url).u}
-   catch{throw Error('地圖短網址暫時無法展開。請開啟 Google 地圖後複製完整網址，或貼上營區座標。')}
-   if(id!==searchId)return;
+   el('searchInfo').textContent='請開啟這個短網址，再貼上展開後的完整網址或營區座標。';
+   const link=document.createElement('a');
+   link.href=u.href;link.target='_blank';link.rel='noopener noreferrer';
+   link.textContent='在 Google 地圖展開短網址';
+   el('choices').append(link);
+   return;
   }
   const point=mapLocation(u);
   if(point.coords)return choose(point.coords);
