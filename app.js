@@ -7,12 +7,11 @@ const fields=[
  ['relative_humidity_2m','相對濕度','%','◉','#6177a3','#eceff8']
 ];
 let active=null,generation=0,searchId=0,lastRefresh=0;
-const today=new Date(),weekend=new Date(today);
-weekend.setDate(today.getDate()+((6-today.getDay()+7)%7));
+const today=new Date();
 function localDate(d){return [d.getFullYear(),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0')].join('-')}
 const end=new Date(today);end.setDate(end.getDate()+4);
 el('day').min=localDate(today);el('day').max=localDate(end);
-el('day').value=localDate(weekend>end?today:weekend);
+el('day').value=localDate(today);
 function stamp(){return new Date().toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit'})}
 function beaufort(speed){
  if(!Number.isFinite(speed)||speed<0)return '—';
@@ -88,7 +87,7 @@ function displayHour(){
  if(!sample)return;
  selectedTime=sample.time;
  const hour=selectedTime.replace('T',' ');
- el('day').value=selectedTime.slice(0,10);
+
  el('earlier').disabled=Number(el('hour').value)===0;
  el('later').disabled=Number(el('hour').value)===hourlySamples.length-1;
  el('hourText').textContent=hour;
@@ -105,49 +104,52 @@ for(const [button,delta] of [['earlier',-1],['later',1]]){
  el(button).onclick=()=>{el('hour').value=Number(el('hour').value)+delta;displayHour()};
 }
 function setForecast(hourly,date,currentTime){
- hourlySamples=[];
- hourly.time.forEach((time,index)=>{
-  const sample={time,daylight:hourly.is_day?.[index]};
-  for(const [key] of fields)sample[key]=hourly[key][index];
-  hourlySamples.push(sample);
- });
- const firstOnDate=hourlySamples.findIndex(s=>s.time.startsWith(date));
- if(!hourlySamples.length)return false;
- el('day').min=hourlySamples[0].time.slice(0,10);
- el('day').max=hourlySamples.at(-1).time.slice(0,10);
- if(firstOnDate<0)return false;
- const last=hourlySamples.length-1;
- const preferred=selectedTime.startsWith(date)?selectedTime:currentTime.slice(0,13)+':00';
- const match=hourlySamples.findIndex(s=>s.time===preferred&&s.time.startsWith(date));
- el('hour').max=last;
- el('hour').value=match>=0?match:firstOnDate;
- const dates=[...new Set(hourlySamples.map(s=>s.time.slice(0,10)))];
+ const todayKey=currentTime.slice(0,10);
+ const dates=[...new Set(hourly.time.map(time=>time.slice(0,10)))].filter(key=>key>=todayKey);
+ if(!dates.length)return false;
+ el('day').min=dates[0];
+ el('day').max=dates.at(-1);
+ if(!dates.includes(date))return false;
  el('dates').replaceChildren();
+ for(const dateKey of dates){
+  const button=document.createElement('button');
+  button.type='button';
+  button.dataset.date=dateKey;
+  button.textContent=dateKey.slice(5).replace('-','/');
+  button.onclick=()=>{
+   el('day').value=dateKey;
+   selectedTime='';
+   setForecast(hourly,dateKey,currentTime);
+  };
+  el('dates').append(button);
+ }
+ const anchor=date+'T'+currentTime.slice(11,13)+':00';
+ let center=hourly.time.indexOf(anchor);
+ if(center<0)center=hourly.time.findIndex(time=>time.startsWith(date)&&time>=anchor);
+ if(center<0)return false;
+ const start=Math.max(0,center-3);
+ hourlySamples=hourly.time.slice(start,center+25).map((time,i)=>{
+  const sample={time,daylight:hourly.is_day?.[start+i]};
+  for(const [key] of fields)sample[key]=hourly[key][start+i];
+  return sample;
+ });
+ const last=hourlySamples.length-1;
+ const saved=hourlySamples.findIndex(s=>s.time===selectedTime);
+ el('hour').max=last;
+ el('hour').value=saved>=0?saved:center-start;
  el('bands').replaceChildren();
  el('ticks').replaceChildren();
- for(const dateKey of dates){
-  const dayButton=document.createElement('button');
-  dayButton.type='button';
-  dayButton.dataset.date=dateKey;
-  dayButton.textContent=dateKey.slice(5).replace('-','/');
-  dayButton.onclick=()=>{
-   const time=dateKey+'T'+selectedTime.slice(11);
-   const index=hourlySamples.findIndex(s=>s.time===time);
-   el('hour').value=index>=0?index:hourlySamples.findIndex(s=>s.time.startsWith(dateKey));
-   displayHour();
-  };
-  el('dates').append(dayButton);
- }
- for(const sample of hourlySamples){
+ hourlySamples.forEach((sample,i)=>{
   const segment=document.createElement('i');
   segment.className=sample.daylight===1?'sun':sample.daylight===0?'moon':'';
+  if(sample.time.endsWith('T00:00'))segment.style.borderLeft='2px solid white';
   el('bands').append(segment);
-  if(sample.time.endsWith('T00:00')||sample.time.endsWith('T12:00')){
-   const tick=document.createElement('small');
-   tick.textContent=sample.time.slice(11,13)+'時';
-   el('ticks').append(tick);
-  }
- }
+  if(i!==0&&i!==last&&(i%6!==0||last-i<3))return;
+  const tick=document.createElement('small');
+  tick.textContent=sample.time.slice(11,13)+'時';
+  tick.style.left=(100*i/Math.max(last,1))+'%';
+  el('ticks').append(tick);
+ });
  displayHour();
  el('timeline').hidden=false;
  return true;
@@ -157,11 +159,11 @@ async function refresh(){
  el('coords').textContent=name+' · '+lat.toFixed(4)+', '+lon.toFixed(4);showMetrics();el('timeline').hidden=true;el('events').textContent='查詢地震目錄中…';el('quake').classList.remove('alert');el('weatherStatus').textContent='正在取得最新天氣…';el('forecastInfo').textContent=date+' · 查詢中…';
  const vars=fields.map(f=>f[0]).join(',');
  await Promise.allSettled([weather(),quakes()]);
- async function weather(){try{const d=await json('https://api.open-meteo.com/v1/forecast',{latitude:lat,longitude:lon,current:vars,hourly:vars+',is_day',wind_speed_unit:'ms',forecast_days:5,timezone:'auto'});if(id!==generation)return;const h=d.hourly;const count=setForecast(h,date,d.current.time);showMetrics(d.current);el('weatherStatus').textContent='模式估計時間 '+d.current.time.replace('T',' ')+'（'+d.timezone+'） · 雨量為前 '+Math.round(d.current.interval/60)+' 分鐘累積 · '+stamp()+' 已查詢';el('forecastInfo').textContent=count?'左右拖動可跨日 · 營區當地時間 · 雨量為前一小時累積':date+' 超出可查詢期間。可用預報為 '+h.time[0].slice(0,10)+' 至 '+h.time.at(-1).slice(0,10)+'。'}catch{if(id!==generation)return;el('weatherStatus').textContent='天氣資料暫時無法取得，可重新按「查詢天氣」。';el('forecastInfo').textContent='逐時預報暫時無法取得。'}}
+ async function weather(){try{const d=await json('https://api.open-meteo.com/v1/forecast',{latitude:lat,longitude:lon,current:vars,hourly:vars+',is_day',wind_speed_unit:'ms',past_days:1,forecast_days:5,timezone:'auto'});if(id!==generation)return;const h=d.hourly;const count=setForecast(h,date,d.current.time);showMetrics(d.current);el('weatherStatus').textContent='模式估計時間 '+d.current.time.replace('T',' ')+'（'+d.timezone+'） · 雨量為前 '+Math.round(d.current.interval/60)+' 分鐘累積 · '+stamp()+' 已查詢';el('forecastInfo').textContent=count?'前 3 小時至後 24 小時 · 以所選日期的營區當地目前整點為基準 · 雨量為前一小時累積':date+' 超出可查詢期間。可用預報為 '+el('day').min+' 至 '+h.time.at(-1).slice(0,10)+'。'}catch{if(id!==generation)return;el('weatherStatus').textContent='天氣資料暫時無法取得，可重新按「查詢天氣」。';el('forecastInfo').textContent='逐時預報暫時無法取得。'}}
  async function quakes(){try{const d=await json('https://earthquake.usgs.gov/fdsnws/event/1/query',{format:'geojson',latitude:lat,longitude:lon,maxradiuskm:100,eventtype:'earthquake',starttime:new Date(Date.now()-7*86400000).toISOString(),orderby:'time'});if(id!==generation)return;const list=d.features;el('events').textContent=list.length?'附近有 '+list.length+' 起地震紀錄，最新事件如下。':'近 7 天查無符合範圍的 USGS 地震紀錄。';el('quake').classList.toggle('alert',list.length>0);list.slice(0,5).forEach(f=>{const p=document.createElement('p'),[x,y,z]=f.geometry.coordinates,v=f.properties;p.textContent='M '+num(v.mag)+'　距營區 '+distance(lat,lon,y,x)+' 公里 · 深度 '+num(z)+' 公里 · '+new Date(v.time).toLocaleString('zh-TW',{timeZone:'Asia/Taipei',hour12:false})+'（台灣時間）';el('events').append(p)});el('events').append(document.createElement('br'),'查詢時間 '+stamp()+'。實際災情請查閱官方告警。')}catch{if(id===generation)el('events').textContent='地震服務暫時無法連線，周邊狀況未知。請查看下方官方報告。'}}
 }
 el('form').onsubmit=search;el('place').oninput=()=>{searchId++;el('choices').replaceChildren();el('searchInfo').textContent=''};
-el('day').onchange=()=>{if(active&&el('place').value===active.name&&el('day').value)choose(active)};
+el('day').onchange=()=>{selectedTime='';if(active&&el('place').value===active.name&&el('day').value)choose(active)};
 el('gps').onclick=()=>{const id=++searchId;el('choices').replaceChildren();el('searchInfo').textContent='正在定位…';const fail=()=>{if(id===searchId)el('searchInfo').textContent='無法取得定位，請輸入營區名稱或座標。'};if(!navigator.geolocation)return fail();navigator.geolocation.getCurrentPosition(p=>{if(id===searchId)choose({lat:p.coords.latitude,lon:p.coords.longitude,name:'目前位置'})},fail,{timeout:12000})};
 showMetrics();try{const p=JSON.parse(localStorage.getItem('camp-trip'));if(p&&Number.isFinite(p.lat)&&Number.isFinite(p.lon)){if(p.date>=el('day').min&&p.date<=el('day').max)el('day').value=p.date;choose(p)}}catch{}
 function tick(){if(!document.hidden&&Date.now()-lastRefresh>=300000)refresh()}setInterval(tick,30000);document.addEventListener('visibilitychange',tick);
