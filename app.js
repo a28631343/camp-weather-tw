@@ -82,6 +82,44 @@ async function search(e){e.preventDefault();const id=++searchId;let q=el('place'
  const coords=parseCoords(q);if(coords)return choose(coords);if(active?.name===q)return choose(active);el('searchInfo').textContent='正在尋找營區…';const data=await json('https://nominatim.openstreetmap.org/search',{q,format:'jsonv2',limit:5,'accept-language':'zh-TW'});if(id!==searchId)return;el('searchInfo').textContent=data.length?'請選擇正確的營區位置。':'找不到這個地點。請貼上地圖上的緯度、經度，或使用目前位置。';data.forEach(v=>{const b=document.createElement('button');b.textContent=v.display_name;b.onclick=()=>choose({name:v.display_name,lat:+v.lat,lon:+v.lon});el('choices').append(b)})}catch(err){if(id===searchId)el('searchInfo').textContent=/^(緯度|地圖)/.test(err.message)?err.message:'地名搜尋暫時無法連線。可直接貼上緯度、經度查詢。'}}
 let hourlySamples=[];
 let selectedTime='';
+let trendKey='temperature_2m';
+function drawTrend(){
+ const svg=el('trend');
+ const index=Number(el('hour').value);
+ const values=hourlySamples.map(sample=>{
+  const v=sample[trendKey];
+  if(trendKey!=='wind_speed_10m'||!Number.isFinite(v))return v;
+  const grade=beaufort(v);return grade==='>17'?18:grade;
+ });
+ const finite=values.filter(Number.isFinite);
+ svg.replaceChildren();
+ if(!finite.length)return;
+ const min=Math.min(...finite),span=Math.max(1,Math.max(...finite)-min);
+ const x=i=>8+584*i/Math.max(1,values.length-1);
+ const y=v=>75-51*(v-min)/span;
+ function shape(name,attrs){
+  const node=document.createElementNS('http://www.w3.org/2000/svg',name);
+  for(const [key,val] of Object.entries(attrs))node.setAttribute(key,val);
+  svg.append(node);return node;
+ }
+ let path='';
+ values.forEach((v,i)=>{if(Number.isFinite(v))path+=(Number.isFinite(values[i-1])?' L':' M')+x(i)+' '+y(v)});
+ shape('path',{d:path,fill:'none',stroke:'currentColor','stroke-width':3,'vector-effect':'non-scaling-stroke'});
+ if(Number.isFinite(values[index])){
+  shape('line',{x1:x(index),x2:x(index),y1:4,y2:87,stroke:'currentColor','stroke-dasharray':'3 4'});
+  shape('circle',{cx:x(index),cy:y(values[index]),r:4,fill:'currentColor'});
+ }
+ const field=fields.find(f=>f[0]===trendKey);
+ const value=trendKey==='wind_speed_10m'?beaufort(hourlySamples[index][trendKey]):num(values[index]);
+ el('trendValue').textContent=field[1]+' '+value+' '+field[2];
+}
+for(const b of el('trendTabs').children){
+ b.onclick=()=>{
+  trendKey=b.dataset.key;
+  for(const option of el('trendTabs').children)option.setAttribute('aria-pressed',String(option===b));
+  drawTrend();
+ };
+}
 function displayHour(){
  const sample=hourlySamples[Number(el('hour').value)];
  if(!sample)return;
@@ -93,9 +131,7 @@ function displayHour(){
  el('hourText').textContent=hour;
  el('phase').textContent=sample.daylight===1?'☀ 白天':sample.daylight===0?'☾ 夜晚':'日夜資料待更新';
  el('phase').className=sample.daylight===1?'sun':sample.daylight===0?'moon':'';
- for(const button of el('dates').children){
-  button.setAttribute('aria-pressed',String(button.dataset.date===selectedTime.slice(0,10)));
- }
+ drawTrend();
  el('hour').setAttribute('aria-valuetext',hour);
  showMetrics(sample,'forecastMetrics');
 }
@@ -115,7 +151,13 @@ function setForecast(hourly,date,currentTime){
   const button=document.createElement('button');
   button.type='button';
   button.dataset.date=dateKey;
-  button.textContent=dateKey.slice(5).replace('-','/');
+  const temps=hourly.temperature_2m.filter((v,i)=>hourly.time[i].startsWith(dateKey)&&Number.isFinite(v));
+  const weekday=new Intl.DateTimeFormat('zh-TW',{weekday:'short',timeZone:'UTC'}).format(new Date(dateKey+'T12:00:00Z'));
+  button.textContent=(dateKey===todayKey?'今天':weekday)+' '+dateKey.slice(5).replace('-','/');
+  const range=document.createElement('small');
+  range.textContent=temps.length?Math.round(Math.max(...temps))+'° / '+Math.round(Math.min(...temps))+'°':'—';
+  button.append(range);
+  button.setAttribute('aria-pressed',String(dateKey===date));
   button.onclick=()=>{
    el('day').value=dateKey;
    selectedTime='';
@@ -123,16 +165,20 @@ function setForecast(hourly,date,currentTime){
   };
   el('dates').append(button);
  }
- const anchor=date+'T'+currentTime.slice(11,13)+':00';
+ const isToday=date===todayKey;
+ const anchor=isToday?currentTime.slice(0,13)+':00':date+'T00:00';
  let center=hourly.time.indexOf(anchor);
  if(center<0)center=hourly.time.findIndex(time=>time.startsWith(date)&&time>=anchor);
  if(center<0)return false;
- const start=Math.max(0,center-3);
- hourlySamples=hourly.time.slice(start,center+25).map((time,i)=>{
+ const start=isToday?Math.max(0,center-3):center;
+ const lastDate=isToday?(dates[1]||todayKey):date;
+ const after=hourly.time.findIndex(time=>time.slice(0,10)>lastDate);
+ hourlySamples=hourly.time.slice(start,after<0?undefined:after).map((time,i)=>{
   const sample={time,daylight:hourly.is_day?.[start+i]};
   for(const [key] of fields)sample[key]=hourly[key][start+i];
   return sample;
  });
+ el('forecastInfo').textContent=hourlySamples[0].time.replace('T',' ')+' 至 '+hourlySamples.at(-1).time.replace('T',' ')+' · 營區當地時間';
  const last=hourlySamples.length-1;
  const saved=hourlySamples.findIndex(s=>s.time===selectedTime);
  el('hour').max=last;
@@ -159,7 +205,7 @@ async function refresh(){
  el('coords').textContent=name+' · '+lat.toFixed(4)+', '+lon.toFixed(4);showMetrics();el('timeline').hidden=true;el('events').textContent='查詢地震目錄中…';el('quake').classList.remove('alert');el('weatherStatus').textContent='正在取得最新天氣…';el('forecastInfo').textContent=date+' · 查詢中…';
  const vars=fields.map(f=>f[0]).join(',');
  await Promise.allSettled([weather(),quakes()]);
- async function weather(){try{const d=await json('https://api.open-meteo.com/v1/forecast',{latitude:lat,longitude:lon,current:vars,hourly:vars+',is_day',wind_speed_unit:'ms',past_days:1,forecast_days:5,timezone:'auto'});if(id!==generation)return;const h=d.hourly;const count=setForecast(h,date,d.current.time);showMetrics(d.current);el('weatherStatus').textContent='模式估計時間 '+d.current.time.replace('T',' ')+'（'+d.timezone+'） · 雨量為前 '+Math.round(d.current.interval/60)+' 分鐘累積 · '+stamp()+' 已查詢';el('forecastInfo').textContent=count?'前 3 小時至後 24 小時 · 以所選日期的營區當地目前整點為基準 · 雨量為前一小時累積':date+' 超出可查詢期間。可用預報為 '+el('day').min+' 至 '+h.time.at(-1).slice(0,10)+'。'}catch{if(id!==generation)return;el('weatherStatus').textContent='天氣資料暫時無法取得，可重新按「查詢天氣」。';el('forecastInfo').textContent='逐時預報暫時無法取得。'}}
+ async function weather(){try{const d=await json('https://api.open-meteo.com/v1/forecast',{latitude:lat,longitude:lon,current:vars,hourly:vars+',is_day',wind_speed_unit:'ms',past_days:1,forecast_days:5,timezone:'auto'});if(id!==generation)return;const h=d.hourly;const count=setForecast(h,date,d.current.time);showMetrics(d.current);el('weatherStatus').textContent='模式估計時間 '+d.current.time.replace('T',' ')+'（'+d.timezone+'） · 雨量為前 '+Math.round(d.current.interval/60)+' 分鐘累積 · '+stamp()+' 已查詢';if(!count)el('forecastInfo').textContent=date+' 超出可查詢期間。可用預報為 '+el('day').min+' 至 '+h.time.at(-1).slice(0,10)+'。'}catch{if(id!==generation)return;el('weatherStatus').textContent='天氣資料暫時無法取得，可重新按「查詢天氣」。';el('forecastInfo').textContent='逐時預報暫時無法取得。'}}
  async function quakes(){try{const d=await json('https://earthquake.usgs.gov/fdsnws/event/1/query',{format:'geojson',latitude:lat,longitude:lon,maxradiuskm:100,eventtype:'earthquake',starttime:new Date(Date.now()-7*86400000).toISOString(),orderby:'time'});if(id!==generation)return;const list=d.features;el('events').textContent=list.length?'附近有 '+list.length+' 起地震紀錄，最新事件如下。':'近 7 天查無符合範圍的 USGS 地震紀錄。';el('quake').classList.toggle('alert',list.length>0);list.slice(0,5).forEach(f=>{const p=document.createElement('p'),[x,y,z]=f.geometry.coordinates,v=f.properties;p.textContent='M '+num(v.mag)+'　距營區 '+distance(lat,lon,y,x)+' 公里 · 深度 '+num(z)+' 公里 · '+new Date(v.time).toLocaleString('zh-TW',{timeZone:'Asia/Taipei',hour12:false})+'（台灣時間）';el('events').append(p)});el('events').append(document.createElement('br'),'查詢時間 '+stamp()+'。實際災情請查閱官方告警。')}catch{if(id===generation)el('events').textContent='地震服務暫時無法連線，周邊狀況未知。請查看下方官方報告。'}}
 }
 el('form').onsubmit=search;el('place').oninput=()=>{searchId++;el('choices').replaceChildren();el('searchInfo').textContent=''};
